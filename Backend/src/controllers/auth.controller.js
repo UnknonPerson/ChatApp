@@ -1,6 +1,8 @@
-import User from "../models/user.models.js";
+import User from "../models/user.model.js";
+import RefreshToken from '../models/refreshToken.model.js'
 import { hashPassword, comparePassword } from "../utils/password.js";
-import { generateAccessToken } from '../utils/token.js';
+import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../utils/token.js';
+import { hashToken } from '../utils/hashToken.js'
 
 export const register = async (req, res) => {
     try {
@@ -78,16 +80,32 @@ export const login = async (req, res) => {
         const user = await User.findOne({ email: email.trim().toLowerCase() }).select("+password");
 
         if (!user) {
-            return res.status(401).json({ message: "User Not Found" });
+            return res.status(401).json({
+                success: false,
+                message: "Invalid email or password"
+            });
         }
 
         const isMatch = await comparePassword(password, user.password);
 
         if (!isMatch) {
-            return res.status(401).json({ message: "Unauthorize/Wrong Password" });
+            return res.status(401).json({
+            success: false,
+            message: "Invalid email or password"
+        });
         }
 
         const accessToken = generateAccessToken(user._id);
+
+        const TokenRefresh = generateRefreshToken(user._id);
+
+        const tokenHash = hashToken(TokenRefresh);
+
+        await RefreshToken.create({
+            user: user._id,
+            tokenHash,
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        });
 
         res.cookie("accessToken", accessToken, {
             httpOnly: true,
@@ -95,6 +113,13 @@ export const login = async (req, res) => {
             sameSite: "lax",
             maxAge: 15 * 60 * 1000
         });
+
+        res.cookie("refreshToken", TokenRefresh, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            maxAge: 7 * 24 * 60 * 60 * 1000
+        })
 
         return res.status(200).json({
             message: "Login Successfully",
@@ -148,3 +173,108 @@ export const getProfile = async (req, res) => {
         });
     }
 };
+
+export const refreshAccessToken = async (req, res) => {
+    try {
+        // 1. Read refresh token from cookie
+        const incomingToken = req.cookies?.refreshToken;
+
+        if (!incomingToken) {
+            return res.status(401).json({
+                success: false,
+                message: "Refresh token required"
+            });
+        }
+
+        // 2. Verify refresh JWT
+        let decoded;
+
+        try {
+            decoded = verifyRefreshToken(incomingToken);
+        } catch (error) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid or expired refresh token"
+            });
+        }
+
+        // 3. Hash incoming token
+        const incomingHash = hashToken(incomingToken);
+
+        // 4. Atomically revoke the old, active refresh-token record
+        const now = new Date();
+
+        const oldSession = await RefreshToken.findOneAndUpdate(
+            {
+                tokenHash: incomingHash,
+                user: decoded.userId,
+                revokedAt: null,
+                expiresAt: { $gt: now }
+            },
+            {
+                $set: { revokedAt: now }
+            },
+            {
+                new: true
+            }
+        );
+
+        if (!oldSession) {
+            return res.status(401).json({
+                success: false,
+                message: "Refresh session is invalid, expired or revoked"
+            });
+        }
+
+        // 5. Generate replacement tokens
+        const userId = oldSession.user;
+
+        const newAccessToken = generateAccessToken(userId);
+        const newRefreshToken = generateRefreshToken(userId);
+
+        // 6. Hash replacement refresh token
+        const newTokenHash = hashToken(newRefreshToken);
+
+        // 7. Save replacement refresh-token record
+        await RefreshToken.create({
+            user: userId,
+            tokenHash: newTokenHash,
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+        });
+
+        // 8. Update cookies
+        res.cookie("accessToken", newAccessToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            maxAge: 15 * 60 * 1000,
+            path: "/"
+        });
+
+        res.cookie("refreshToken", newRefreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+            path: "/"
+        });
+
+        // 9. Send response
+        return res.status(200).json({
+            success: true,
+            message: "Tokens refreshed successfully"
+        });
+
+    } catch (error) {
+        console.error("Refresh token error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error"
+        });
+    }
+};
+
+export const logout = async (req, res) => {
+    
+}
