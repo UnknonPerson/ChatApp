@@ -1,5 +1,6 @@
 import User from "../models/user.models.js";
 import { hashPassword, comparePassword } from "../utils/password.js";
+import { generateAccessToken } from '../utils/token.js';
 
 export const register = async (req, res) => {
     try {
@@ -86,6 +87,15 @@ export const login = async (req, res) => {
             return res.status(401).json({ message: "Unauthorize/Wrong Password" });
         }
 
+        const accessToken = generateAccessToken(user._id);
+
+        res.cookie("accessToken", accessToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            maxAge: 15 * 60 * 1000
+        });
+
         return res.status(200).json({
             message: "Login Successfully",
             user: {
@@ -102,6 +112,39 @@ export const login = async (req, res) => {
         return res.status(500).json({
             success: false,
             message: "Internal server error."
+        });
+    }
+};
+
+export const getProfile = async (req, res) => {
+    try {
+        const userId = req.user.userId;
+
+        const user = await User.findById(userId);
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            user: {
+                _id: user._id,
+                username: user.username,
+                email: user.email,
+                profilePicture: user.profilePicture
+            }
+        });
+
+    } catch (error) {
+        console.error("Get profile error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Unexpected error happened"
         });
     }
 };
