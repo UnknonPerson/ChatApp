@@ -276,5 +276,48 @@ export const refreshAccessToken = async (req, res) => {
 };
 
 export const logout = async (req, res) => {
-    
-}
+    try {
+        const incomingToken = req.cookies?.refreshToken;
+
+        // Revoke only the current device's refresh-token session
+        if (incomingToken) {
+            const tokenHash = hashToken(incomingToken);
+
+            await RefreshToken.updateOne(
+                {
+                    tokenHash,
+                    revokedAt: null
+                },
+                {
+                    $set: {
+                        revokedAt: new Date()
+                    }
+                }
+            );
+        }
+
+        // Clear authentication cookies
+        const cookieOptions = {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            path: "/"
+        };
+
+        res.clearCookie("accessToken", cookieOptions);
+        res.clearCookie("refreshToken", cookieOptions);
+
+        return res.status(200).json({
+            success: true,
+            message: "Logged out successfully"
+        });
+
+    } catch (error) {
+        console.error("Logout error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message: "Logout failed"
+        });
+    }
+};
