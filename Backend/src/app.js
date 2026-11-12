@@ -24,9 +24,9 @@ app.get("/", (req, res) => {
     res.send("API is running...");
 });
 
-app.use("/api/auth", authRouter);
-app.use("/api/users", userRouter);
-app.use("/api/conversations", conversationRouter);
-app.use("/api/messages", messageRoutes);
+app.use("/api/v1/auth", authRouter);
+app.use("/api/v1/users", userRouter);
+app.use("/api/v1/conversations", conversationRouter);
+app.use("/api/v1/messages", messageRoutes);
 
 export default app;

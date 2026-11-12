@@ -1,4 +1,3 @@
-
 import { Server } from "socket.io";
 import { verifyAccessToken } from "../utils/token.js";
 import Conversation from "../models/conversation.model.js";
@@ -6,6 +5,7 @@ import mongoose from "mongoose";
 import Message from "../models/message.model.js";
 
 // Extract a specific cookie from the request header
+
 const getCookieValue = (cookieHeader, name) => {
     const cookies = cookieHeader.split(";");
 
@@ -95,6 +95,147 @@ export const initializeSocket = (httpServer) => {
         console.log("Online users:", [...onlineUsers.keys()]);
 
 
+
+        socket.on("mark_messages_read", async ({ conversationId, messageIds }) => {
+            try {
+                // Validate conversation ID
+                if (
+                    typeof conversationId !== "string" ||
+                    !/^[0-9a-fA-F]{24}$/.test(conversationId)
+                ) return;
+
+                // Validate message IDs
+                if (
+                    !Array.isArray(messageIds) ||
+                    messageIds.length === 0 ||
+                    messageIds.length > 100 ||
+                    !messageIds.every(id =>
+                        typeof id === "string" && /^[0-9a-fA-F]{24}$/.test(id)
+                    )
+                ) return;
+
+                // User must have joined this conversation
+                if (!socket.rooms.has(conversationId)) return;
+
+                // Verify conversation membership
+                const conversation = await Conversation.findOne({
+                    _id: conversationId,
+                    participants: socket.userId
+                });
+
+                if (!conversation) return;
+
+                const ids = [...new Set(messageIds)];
+                const readAt = new Date();
+
+                // Mark only the selected incoming messages as read
+                await Message.updateMany(
+                    {
+                        _id: { $in: ids },
+                        conversation: conversationId,
+                        sender: { $ne: socket.userId },
+                        receipts: {
+                            $elemMatch: {
+                                user: socket.userId,
+                                readAt: null
+                            }
+                        }
+                    },
+                    {
+                        $set: {
+                            "receipts.$[receipt].readAt": readAt
+                        }
+                    },
+                    {
+                        arrayFilters: [
+                            {
+                                "receipt.user": socket.userId,
+                                "receipt.readAt": null
+                            }
+                        ]
+                    }
+                );
+
+                // Find exactly the messages updated by this operation
+                const updatedMessages = await Message.find({
+                    _id: { $in: ids },
+                    conversation: conversationId,
+                    sender: { $ne: socket.userId },
+                    receipts: {
+                        $elemMatch: {
+                            user: socket.userId,
+                            readAt
+                        }
+                    }
+                }).select("_id");
+
+                if (updatedMessages.length === 0) return;
+
+                // Notify other participants in this conversation
+                socket.to(conversationId).emit("messages_read", {
+                    conversationId,
+                    userId: socket.userId,
+                    messageIds: updatedMessages.map(msg => msg._id),
+                    readAt
+                });
+
+            } catch (error) {
+                console.error("Mark messages read error:", error);
+            }
+        });
+
+
+
+        socket.on("message_delivered", async (messageId) => {
+            try {
+                if (
+                    typeof messageId !== "string" ||
+                    !/^[0-9a-fA-F]{24}$/.test(messageId)
+                ) {
+                    return;
+                }
+
+                const message = await Message.findOneAndUpdate(
+                    {
+                        _id: messageId,
+                        receipts: {
+                            $elemMatch: {
+                                user: socket.userId,
+                                deliveredAt: null,
+                            },
+                        },
+                    },
+                    {
+                        $set: {
+                            "receipts.$.deliveredAt": new Date(),
+                        },
+                    },
+                    {
+                        new: true,
+                    }
+                );
+
+                if (!message) return;
+
+                // Notify the sender
+                io.to(message.conversation.toString())
+                    .emit("message_status_updated", {
+                        messageId: message._id,
+                        userId: socket.userId,
+                        status: "delivered",
+                        deliveredAt: message.receipts.find(
+                            (receipt) =>
+                                receipt.user.equals(socket.userId)
+                        ).deliveredAt,
+                    });
+
+            } catch (error) {
+                console.error("Delivery acknowledgment error:", error);
+            }
+        });
+
+
+
         // Join a conversation room
         socket.on("join_conversation", async (conversationId) => {
             try {
@@ -153,6 +294,7 @@ export const initializeSocket = (httpServer) => {
         });
 
 
+
         socket.on("send_message", async (data) => {
             try {
                 const { conversationId, content } = data || {};
@@ -199,25 +341,37 @@ export const initializeSocket = (httpServer) => {
                     });
                 }
 
-                // 5. Save message in MongoDB
+                // 5. Create receipt entries for all recipients
+                const receipts = conversation.participants
+                    .filter(
+                        (participant) => !participant.equals(socket.userId)
+                    )
+                    .map((participant) => ({
+                        user: participant,
+                        deliveredAt: null,
+                        readAt: null,
+                    }));
+
+                // 6. Save message in MongoDB
                 const newMessage = await Message.create({
                     conversation: conversationId,
                     sender: socket.userId,
                     content: content.trim(),
                     messageType: "text",
+                    receipts,
                 });
 
-                // 6. Update conversation's last message
+                // 7. Update conversation's last message
                 conversation.lastMessage = newMessage._id;
                 await conversation.save();
 
-                // 7. Populate sender details
+                // 8. Populate sender details
                 await newMessage.populate(
                     "sender",
                     "username profilePicture"
                 );
 
-                // 8. Broadcast message to everyone in the room
+                // 9. Broadcast message to conversation room
                 io.to(conversationId).emit("new_message", newMessage);
 
                 console.log(
@@ -232,6 +386,7 @@ export const initializeSocket = (httpServer) => {
                 });
             }
         });
+
 
 
         // User starts typing
