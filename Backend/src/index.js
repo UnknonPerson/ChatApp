@@ -17,6 +17,7 @@ connectDB()
         initializeSocket(httpServer);
 
         const PORT = process.env.PORT || 5000;
+        
 
         // Start HTTP + Socket.IO server
         httpServer.listen(PORT, () => {

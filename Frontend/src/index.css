@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@theme {
+  --color-neo-bg: #f5f0e8;
+  --color-neo-yellow: #f9e547;
+  --color-neo-black: #171717;
+  --color-neo-purple: #c7b8ff;
+  --color-neo-coral: #ff8066;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-neo-bg);
+  color: var(--color-neo-black);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+button, input {
+  font: inherit;
+}
+
+::selection {
+  background: #f9e547;
+  color: #171717;
+}

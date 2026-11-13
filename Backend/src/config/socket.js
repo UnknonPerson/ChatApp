@@ -295,64 +295,62 @@ export const initializeSocket = (httpServer) => {
 
 
 
-        socket.on("send_message", async (data) => {
+
+        socket.on("send_message", async (data, callback) => {
+            const respond = (result) => {
+                if (typeof callback === "function") {
+                    callback(result);
+                }
+            };
+
             try {
                 const { conversationId, content } = data || {};
 
-                // 1. Validate conversation ID
                 if (
                     typeof conversationId !== "string" ||
                     !/^[0-9a-fA-F]{24}$/.test(conversationId)
                 ) {
-                    return socket.emit("socket_error", {
+                    return respond({
+                        success: false,
                         message: "Invalid conversation ID",
                     });
                 }
 
-                // 2. Validate message content
-                if (
-                    typeof content !== "string" ||
-                    !content.trim()
-                ) {
-                    return socket.emit("socket_error", {
+                if (typeof content !== "string" || !content.trim()) {
+                    return respond({
+                        success: false,
                         message: "Message content is required",
                     });
                 }
 
-                // 3. Find conversation
-                const conversation = await Conversation.findById(
-                    conversationId
-                );
+                const conversation = await Conversation.findById(conversationId);
 
                 if (!conversation) {
-                    return socket.emit("socket_error", {
+                    return respond({
+                        success: false,
                         message: "Conversation not found",
                     });
                 }
 
-                // 4. Verify sender is a participant
                 const isParticipant = conversation.participants.some(
                     (participant) => participant.equals(socket.userId)
                 );
 
                 if (!isParticipant) {
-                    return socket.emit("socket_error", {
+                    return respond({
+                        success: false,
                         message: "You are not allowed to send messages here",
                     });
                 }
 
-                // 5. Create receipt entries for all recipients
                 const receipts = conversation.participants
-                    .filter(
-                        (participant) => !participant.equals(socket.userId)
-                    )
+                    .filter((participant) => !participant.equals(socket.userId))
                     .map((participant) => ({
                         user: participant,
                         deliveredAt: null,
                         readAt: null,
                     }));
 
-                // 6. Save message in MongoDB
                 const newMessage = await Message.create({
                     conversation: conversationId,
                     sender: socket.userId,
@@ -361,31 +359,33 @@ export const initializeSocket = (httpServer) => {
                     receipts,
                 });
 
-                // 7. Update conversation's last message
                 conversation.lastMessage = newMessage._id;
                 await conversation.save();
 
-                // 8. Populate sender details
                 await newMessage.populate(
                     "sender",
                     "username profilePicture"
                 );
 
-                // 9. Broadcast message to conversation room
                 io.to(conversationId).emit("new_message", newMessage);
 
-                console.log(
-                    `Message sent by ${socket.userId} in ${conversationId}`
-                );
+                // Confirm successful persistence to the sender
+                respond({
+                    success: true,
+                    message: "Message sent successfully",
+                    data: newMessage,
+                });
 
             } catch (error) {
                 console.error("Send message error:", error);
 
-                socket.emit("socket_error", {
+                respond({
+                    success: false,
                     message: "Failed to send message",
                 });
             }
         });
+
 
 
 
